@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DCO Deadline Calculator</title>
+<style>
+  :root {
+    --navy: #1b2a4a;
+    --navy-light: #2c4270;
+    --accent: #b8860b;
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #22293a;
+    --muted: #6b7280;
+    --border: #e2e5ea;
+    --warn-bg: #fff7e6;
+    --warn-border: #f0c36d;
+    --ok: #1a7f4b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  header {
+    background: var(--navy); color: #fff; padding: 18px 28px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  header .logo {
+    width: 40px; height: 40px; border-radius: 8px; background: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; flex-shrink: 0;
+  }
+  header h1 { font-size: 19px; font-weight: 600; letter-spacing: .2px; }
+  header p { font-size: 12.5px; opacity: .75; margin-top: 2px; }
+  main { max-width: 980px; margin: 0 auto; padding: 26px 20px 60px; }
+
+  /* Drop zone */
+  #dropzone {
+    border: 2px dashed #b7bfcc; border-radius: 12px; background: var(--card);
+    padding: 48px 24px; text-align: center; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #dropzone.dragover { border-color: var(--navy-light); background: #eef2fa; }
+  #dropzone .big { font-size: 17px; font-weight: 600; margin-top: 10px; }
+  #dropzone .sub { font-size: 13.5px; color: var(--muted); margin-top: 6px; }
+  #dropzone .icon { font-size: 40px; }
+  #dropzone #btnBrowse { margin-top: 16px; font-size: 14.5px; padding: 11px 22px; }
+  #fileInput { display: none; }
+
+  /* Progress */
+  #progress { display: none; background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 26px; margin-top: 18px; }
+  #progress .label { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+  #progress .sub { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  .bar { height: 8px; background: #e8ebf0; border-radius: 4px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0%; background: linear-gradient(90deg, var(--navy-light), var(--accent)); transition: width .25s; }
+
+  /* Results */
+  #results { display: none; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 24px; margin-top: 18px; }
+  .case-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+  .case-grid .k { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+  .case-grid .v { font-size: 14.5px; font-weight: 600; margin-top: 3px; }
+
+  .trial-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .trial-row label { font-size: 13px; font-weight: 600; color: var(--muted); }
+  #trialDateInput {
+    font-size: 16px; font-weight: 600; padding: 8px 12px; border: 1px solid var(--border);
+    border-radius: 8px; font-family: inherit; color: var(--navy);
+  }
+  .trial-big { font-size: 15px; font-weight: 700; color: var(--navy); }
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px;
+    border-radius: 999px; background: #e8f5ee; color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: #9a6700; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .7px;
+    color: var(--muted); padding: 10px 12px; border-bottom: 2px solid var(--border); }
+  td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 14px; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr.past td { opacity: .5; }
+  td.date-cell { white-space: nowrap; font-weight: 700; color: var(--navy); }
+  td .dow { font-size: 12px; color: var(--muted); font-weight: 400; display: block; }
+  td .adj { display: block; font-size: 11.5px; color: #9a6700; background: var(--warn-bg);
+    border: 1px solid var(--warn-border); border-radius: 6px; padding: 2px 8px; margin-top: 5px; width: fit-content; }
+  td .rule { font-size: 12px; color: var(--muted); display: block; margin-top: 2px; }
+  td .countdown { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  tr.trial-row-hl td { background: #f5f0e2; }
+
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  button.act {
+    font-family: inherit; font-size: 13.5px; font-weight: 600; padding: 9px 16px;
+    border-radius: 8px; border: 1px solid var(--border); background: #fff; color: var(--navy);
+    cursor: pointer; transition: background .12s;
+  }
+  button.act:hover { background: #eef2fa; }
+  button.act.primary { background: var(--navy); color: #fff; border-color: var(--navy); }
+  button.act.primary:hover { background: var(--navy-light); }
+
+  .note { font-size: 12px; color: var(--muted); line-height: 1.55; margin-top: 14px; }
+  #errorBox { display: none; margin-top: 18px; background: #fdecec; border: 1px solid #f1b0b0;
+    color: #8a1f1f; border-radius: 10px; padding: 16px 20px; font-size: 14px; }
+  #resetBtn { margin-top: 4px; }
+  h2 { font-size: 15px; margin-bottom: 8px; color: var(--navy); }
+  .section-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+
+  @media print {
+    header, #dropzone, .actions, #resetBtn, .no-print { display: none !important; }
+    body { background: #fff; }
+    .card { border: none; box-shadow: none; padding: 8px 0; }
+    main { padding: 0; max-width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">⚖️</div>
+  <div>
+    <h1>DCO Deadline Calculator</h1>
+    <p>Upload a Docket Control Order — get every deadline as a real date. Nothing is saved or sent anywhere.</p>
+  </div>
+</header>
+
+<main>
+  <div id="dropzone">
+    <div class="icon">📄</div>
+    <div class="big">Drop the DCO PDF here</div>
+    <div class="sub">Scanned PDFs are fine — text is read with built-in OCR, entirely in your browser.</div>
+    <button class="act primary" id="btnBrowse" type="button">📂 Choose a file…</button>
+    <input type="file" id="fileInput" accept="application/pdf,.pdf">
+  </div>
+
+  <div id="progress">
+    <div class="label" id="progLabel">Reading document…</div>
+    <div class="bar"><div id="progBar"></div></div>
+    <div class="sub" id="progSub"></div>
+  </div>
+
+  <div id="errorBox"></div>
+
+  <div id="results">
+    <div class="card" id="caseCard">
+      <div class="case-grid" id="caseGrid"></div>
+    </div>
+
+    <div class="card">
+      <div class="trial-row">
+        <label for="trialDateInput">TRIAL DATE</label>
+        <input type="date" id="trialDateInput">
+        <span id="trialSource" class="pill"></span>
+      </div>
+      <div class="note no-print">If the OCR misread the trial date, correct it here — all deadlines recalculate instantly.</div>
+    </div>
+
+    <div class="card">
+      <div class="section-head">
+        <h2>Deadlines (calculated from trial date)</h2>
+        <span class="note" style="margin:0" id="genStamp"></span>
+      </div>
+      <table id="deadlineTable">
+        <thead>
+          <tr><th style="width:150px">Date</th><th>Deadline</th><th style="width:120px">Countdown</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="actions">
+        <button class="act primary" id="btnCopy">📋 Copy table</button>
+        <button class="act" id="btnCsv">⬇ Download CSV</button>
+        <button class="act" id="btnIcs">📅 Export to calendar (.ics)</button>
+        <button class="act" id="btnPrint">🖨 Print</button>
+        <button class="act" id="resetBtn">↺ New document</button>
+      </div>
+      <div class="note">
+        Per the order, any deadline falling on a weekend or legal holiday is moved to the <b>first business day
+        thereafter</b> — adjusted dates are flagged in amber. Holidays checked: New Year's Day, MLK Day, Presidents
+        Day, Good Friday, Memorial Day, Juneteenth, July 4, Labor Day, Veterans Day, Thanksgiving (Thu &amp; Fri),
+        Christmas Eve &amp; Day, Dec 26. County-observed holidays can vary — verify any flagged date against the
+        Williamson County Commissioners Court holiday schedule. This tool is an aid, not legal advice.
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="lib/pdf.min.js"></script>
+<script src="lib/tesseract.min.js"></script>
+<script>
+"use strict";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+
+const $ = id => document.getElementById(id);
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const MONTH_RE = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)";
+const WORD_NUM = { ONE:1, TWO:2, THREE:3, FOUR:4, FIVE:5, SIX:6, SEVEN:7, EIGHT:8, NINE:9, TEN:10,
+  ELEVEN:11, TWELVE:12, THIRTEEN:13, FOURTEEN:14, FIFTEEN:15, TWENTY:20, THIRTY:30, FORTY:40,
+  FORTYFIVE:45, FIFTY:50, SIXTY:60, SEVENTY:70, "SEVENTY-FIVE":75, EIGHTY:80, NINETY:90 };
+
+let state = { text: "", caseInfo: {}, deadlines: [], fixedItems: [], trialDate: null, trialDateSource: "" };
+
+/* ---------------- Date helpers ---------------- */
+function nthWeekday(year, month, weekday, n) { // month 0-based
+  const d = new Date(year, month, 1);
+  let count = 0;
+  while (true) {
+    if (d.getDay() === weekday) { count++; if (count === n) return new Date(d); }
+    d.setDate(d.getDate() + 1);
+  }
+}
+function lastWeekday(year, month, weekday) {
+  const d = new Date(year, month + 1, 0);
+  while (d.getDay() !== weekday) d.setDate(d.getDate() - 1);
+  return d;
+}
+function easterSunday(year) { // Anonymous Gregorian algorithm
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100,
+    d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25),
+    g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30,
+    i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7,
+    m = Math.floor((a + 11 * h + 22 * l) / 451),
+    month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+function holidaysFor(year) {
+  const list = [];
+  const add = (d, name) => list.push({ key: d.toDateString(), name });
+  const fixed = (m, day, name) => {
+    const d = new Date(year, m, day);
+    add(d, name);
+    // county-observed shift for fixed-date holidays
+    if (d.getDay() === 6) add(new Date(year, m, day - 1), name + " (observed)");
+    if (d.getDay() === 0) add(new Date(year, m, day + 1), name + " (observed)");
+  };
+  fixed(0, 1, "New Year's Day");
+  add(nthWeekday(year, 0, 1, 3), "MLK Day");
+  add(nthWeekday(year, 1, 1, 3), "Presidents Day");
+  const easter = easterSunday(year);
+  const gf = new Date(easter); gf.setDate(gf.getDate() - 2);
+  add(gf, "Good Friday");
+  add(lastWeekday(year, 4, 1), "Memorial Day");
+  fixed(5, 19, "Juneteenth");
+  fixed(6, 4, "Independence Day");
+  add(nthWeekday(year, 8, 1, 1), "Labor Day");
+  fixed(10, 11, "Veterans Day");
+  const tg = nthWeekday(year, 10, 4, 4);
+  add(tg, "Thanksgiving");
+  const tgFri = new Date(tg); tgFri.setDate(tgFri.getDate() + 1);
+  add(tgFri, "Day after Thanksgiving");
+  fixed(11, 24, "Christmas Eve");
+  fixed(11, 25, "Christmas Day");
+  fixed(11, 26, "Day after Christmas");
+  return list;
+}
+const holidayCache = {};
+function holidayName(d) {
+  const y = d.getFullYear();
+  if (!holidayCache[y]) {
+    holidayCache[y] = {};
+    for (const h of holidaysFor(y)) holidayCache[y][h.key] = h.name;
+  }
+  return holidayCache[y][d.toDateString()] || null;
+}
+function rollForward(d) {
+  const out = new Date(d);
+  const reasons = [];
+  while (true) {
+    const dow = out.getDay();
+    const hol = holidayName(out);
+    if (dow === 0 || dow === 6) { reasons.push(dow === 0 ? "Sunday" : "Saturday"); }
+    else if (hol) { reasons.push(hol); }
+    else break;
+    out.setDate(out.getDate() + 1);
+  }
+  return { date: out, moved: out.getTime() !== d.getTime(), reasons };
+}
+function fmtDate(d) {
+  return MONTHS[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear();
+}
+function fmtDow(d) {
+  return ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][d.getDay()];
+}
+function isoDate(d) {
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+function parseMonthName(s) {
+  const p = s.slice(0, 3).toLowerCase();
+  return ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(p);
+}
+
+/* ---------------- PDF → text ---------------- */
+async function extractText(file, onProgress) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  // 1) try embedded text layer
+  let embedded = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    embedded += tc.items.map(it => it.str).join(" ") + "\n";
+  }
+  if (embedded.replace(/\s/g, "").length > 200) return embedded;
+
+  // 2) scanned document → OCR each page
+  onProgress("Preparing OCR engine…", 0.05);
+  const abs = p => new URL(p, location.href).href;
+  const worker = await Tesseract.createWorker("eng", 1, {
+    workerPath: abs("lib/worker.min.js"),
+    corePath: abs("lib/core"),
+    langPath: abs("lib/lang"),
+    logger: m => {
+      if (m.status === "recognizing text") {
+        onProgress(null, 0.15 + 0.85 * ((ocrPageDone + m.progress) / pdf.numPages));
+      }
+    }
+  });
+  let ocrPageDone = 0, fullText = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    onProgress("Reading page " + i + " of " + pdf.numPages + " (OCR)…", null);
+    const page = await pdf.getPage(i);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(3, 1900 / base.width);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    const { data } = await worker.recognize(canvas);
+    fullText += data.text + "\n";
+    ocrPageDone++;
+  }
+  await worker.terminate();
+  return fullText;
+}
+
+/* ---------------- Parsing ---------------- */
+function parseDatesNear(text) {
+  // returns [{index, date, raw}]
+  const re = new RegExp("(" + MONTH_RE + ")\\.?\\s+(\\d{1,2})\\s*,?\\s*(\\d{4})", "gi");
+  const out = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const month = parseMonthName(m[1]);
+    const day = parseInt(m[2], 10), year = parseInt(m[3], 10);
+    if (month >= 0 && day >= 1 && day <= 31 && year > 1990 && year < 2100) {
+      out.push({ index: m.index, date: new Date(year, month, day), raw: m[0] });
+    }
+  }
+  return out;
+}
+
+function parseDocument(rawText) {
+  const text = rawText.replace(/[|]/g, " ").replace(/[ \t]+/g, " ");
+  const flat = text.replace(/\s+/g, " ");
+  const info = {};
+
+  let m = flat.match(/CAUSE\s*N[O0]\.?\s*[:.]?\s*([\w][\w-]{3,25})/i);
+  if (m) info.cause = m[1];
+  m = flat.match(/(?<!\d)(\d+)\s*(?:ST|ND|RD|TH|st|nd|rd|th|™)?\s*JUDICIAL\s+DISTRICT/i);
+  if (m) {
+    // Texas district court numbers are at most 3 digits; OCR often mangles the
+    // superscript ordinal ("368TH" -> "36874"), so keep the leading digits only
+    const num = m[1].length > 3 ? m[1].slice(0, 3) : m[1];
+    info.court = num + getOrdinal(parseInt(num, 10)) + " Judicial District";
+  }
+  m = flat.match(/([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)\s+COUNTY\s*,?\s*TEXAS/i);
+  if (m) info.county = titleCase(m[1]) + " County, Texas";
+  // parties: caption is two-column, so "vs." may end a line with the defendant below
+  const capLines = rawText.split(/\n/).slice(0, 15).map(l =>
+    l.replace(/§.*$/, "")
+     .replace(/\b(IN THE DISTRICT COURT|JUDICIAL DISTRICT|COUNTY,?\s*TEXAS).*$/i, "")
+     .replace(/[^\w)]+$/, "").trim()
+  );
+  for (let i = 0; i < capLines.length; i++) {
+    const both = capLines[i].match(/^(.{3,70}?)\s+vs?\.?\s+(.{3,70})$/i);
+    if (both) { info.parties = both[1] + "  v.  " + both[2]; break; }
+    const trailing = capLines[i].match(/^(.{3,70}?)\s+vs?\.?$/i);
+    if (trailing) {
+      const next = capLines.slice(i + 1).find(l => l.length > 2);
+      if (next) { info.parties = trailing[1] + "  v.  " + next; break; }
+    }
+  }
+
+  // ---- trial date: "TRIAL:" (not PRE-TRIAL) followed by a date ----
+  let trialDate = null, trialSource = "";
+  const allDates = parseDatesNear(flat);
+  const trialRe = /(?<![A-Za-z-])TRIAL\s*[:;.,_]*\s*/gi;
+  let tm;
+  while ((tm = trialRe.exec(flat)) !== null) {
+    const before = flat.slice(Math.max(0, tm.index - 30), tm.index).toUpperCase();
+    if (/PRE[-\s—–]*$/.test(before) || /CONFERENCE\s*$/.test(before)) continue;
+    // date must start within ~15 chars of the match end
+    const near = allDates.find(d => d.index >= trialRe.lastIndex - 2 && d.index <= trialRe.lastIndex + 15);
+    if (near) { trialDate = near.date; trialSource = "found in document"; }
+  }
+  if (!trialDate && allDates.length) {
+    // fallback: latest date mentioned is almost always the trial date
+    trialDate = allDates.reduce((a, b) => (b.date > a.date ? b : a)).date;
+    trialSource = "best guess — please verify";
+  }
+
+  // ---- fixed-date items (e.g. Pre-Trial Conference with explicit date) ----
+  const fixedItems = [];
+  const ptcRe = /PRE[-\s—–]*TRIAL\s+CONFERENCE\s*[:;.,_]*\s*/gi;
+  while ((tm = ptcRe.exec(flat)) !== null) {
+    const near = allDates.find(d => d.index >= ptcRe.lastIndex - 2 && d.index <= ptcRe.lastIndex + 15);
+    if (near) {
+      const timeM = flat.slice(near.index, near.index + 60).match(/at\s+(\d{1,2}:\d{2}\s*[ap]\.?m\.?)/i);
+      fixedItems.push({ label: "Pre-Trial Conference", date: near.date,
+        rule: "Set by the Court" + (timeM ? " — " + timeM[1] : "") , time: timeM ? timeM[1] : null });
+    }
+  }
+
+  // ---- relative deadlines: "N DAYS BEFORE TRIAL" ----
+  const deadlines = [];
+  const dlRe = /((?:\d{1,3})|(?:[A-Z][A-Z-]{2,12}))\s*(?:\(\s*(\d{1,3})\s*\))?\s*DAYS?\s+BEFORE\s+(?:THE\s+)?TRIAL/gi;
+  let lastEnd = 0, currentHeading = "";
+  let dm;
+  const matches = [];
+  while ((dm = dlRe.exec(flat)) !== null) matches.push({ m: dm, index: dm.index, end: dlRe.lastIndex });
+  for (const { m: dmm, index, end } of matches) {
+    let days = null;
+    if (/^\d+$/.test(dmm[1])) days = parseInt(dmm[1], 10);
+    else if (dmm[2]) days = parseInt(dmm[2], 10);
+    else if (WORD_NUM[dmm[1].toUpperCase()]) days = WORD_NUM[dmm[1].toUpperCase()];
+    if (days === null || days < 1 || days > 400) { lastEnd = end; continue; }
+
+    const chunk = flat.slice(lastEnd, index);
+    // heading like "7. JOINT NOTICE FILING:"
+    const headRe = /\d{1,2}\s*[.)]\s*([A-Z][A-Z ()\/,&'’-]{3,60}?)\s*[:;]/g;
+    let hm, lastHead = null;
+    while ((hm = headRe.exec(chunk)) !== null) lastHead = hm[1];
+    if (lastHead) currentHeading = titleCase(lastHead.trim());
+    // sub-item like "(a) Parties seeking affirmative relief"
+    let subLabel = null;
+    const subRe = /\(([a-z])\)\s*([A-Za-z][\w ,'’-]{3,60}?)\s*$/;
+    const sm = chunk.trimEnd().match(subRe);
+    if (sm) subLabel = sm[2].trim();
+    // context phrase fallback (e.g. "OBJECTIONS TO DEPOSITION EXCERPTS ... FIVE (5) DAYS BEFORE TRIAL")
+    let contextLabel = null;
+    const capsM = chunk.match(/([A-Z][A-Z ()\/,&'’-]{14,90})\s*(?:MUST|SHALL|WILL)[A-Z ]*$/);
+    if (capsM) contextLabel = titleCase(capsM[1].trim());
+
+    let label = currentHeading || "Deadline";
+    if (subLabel) label += " — " + subLabel;
+    else if (contextLabel && !currentHeading.toUpperCase().includes(contextLabel.toUpperCase().slice(0, 12))) {
+      // only use context phrase when it adds info beyond the heading
+      const chunkAfterHead = lastHead ? chunk.slice(chunk.lastIndexOf(lastHead) + lastHead.length) : chunk;
+      if (chunkAfterHead.includes(capsM[1])) label = contextLabel;
+    }
+    deadlines.push({ label, days });
+    lastEnd = end;
+  }
+  // dedupe
+  const seen = new Set();
+  const deduped = deadlines.filter(d => {
+    const k = d.label.toLowerCase() + "|" + d.days;
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+
+  return { info, trialDate, trialSource, deadlines: deduped, fixedItems };
+}
+function getOrdinal(n) {
+  const s = ["th","st","nd","rd"], v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
+}
+function titleCase(s) {
+  const small = new Set(["of","or","and","the","to","in","for","a","an"]);
+  return s.toLowerCase().split(/\s+/).map((w, i) =>
+    (i > 0 && small.has(w)) ? w : w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
+    .replace(/\bIn Limine\b/i, "in Limine");
+}
+
+/* ---------------- Rendering ---------------- */
+function buildRows() {
+  const trial = state.trialDate;
+  const rows = [];
+  for (const d of state.deadlines) {
+    const raw = new Date(trial);
+    raw.setDate(raw.getDate() - d.days);
+    const { date, moved, reasons } = rollForward(raw);
+    rows.push({ label: d.label, rule: d.days + " days before trial", date, raw, moved, reasons, kind: "deadline" });
+  }
+  for (const f of state.fixedItems) {
+    rows.push({ label: f.label, rule: f.rule, date: f.date, raw: f.date, moved: false, reasons: [], kind: "fixed" });
+  }
+  rows.push({ label: "TRIAL", rule: "Trial date", date: trial, raw: trial, moved: false, reasons: [], kind: "trial" });
+  rows.sort((a, b) => a.date - b.date || (b.kind === "trial" ? -1 : 0));
+  return rows;
+}
+function render() {
+  const grid = $("caseGrid");
+  grid.innerHTML = "";
+  const info = state.caseInfo;
+  const cells = [
+    ["Cause No.", info.cause], ["Parties", info.parties],
+    ["Court", info.court], ["County", info.county]
+  ].filter(c => c[1]);
+  $("caseCard").style.display = cells.length ? "" : "none";
+  for (const [k, v] of cells) {
+    const div = document.createElement("div");
+    div.innerHTML = '<div class="k"></div><div class="v"></div>';
+    div.querySelector(".k").textContent = k;
+    div.querySelector(".v").textContent = v;
+    grid.appendChild(div);
+  }
+
+  $("trialDateInput").value = state.trialDate ? isoDate(state.trialDate) : "";
+  const src = $("trialSource");
+  src.textContent = state.trialDateSource;
+  src.className = "pill" + (state.trialDateSource.includes("verify") ? " warn" : "");
+  src.style.display = state.trialDateSource ? "" : "none";
+
+  const tbody = $("deadlineTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  const today = new Date(); today.setHours(0,0,0,0);
+  for (const r of buildRows()) {
+    const tr = document.createElement("tr");
+    if (r.kind === "trial") tr.className = "trial-row-hl";
+    else if (r.date < today) tr.className = "past";
+    const days = Math.round((r.date - today) / 86400000);
+    const cd = r.kind === "trial" ? "" :
+      days < 0 ? Math.abs(days) + " days ago" :
+      days === 0 ? "TODAY" : "in " + days + " days";
+    const adjHtml = r.moved
+      ? '<span class="adj">⚠ moved from ' + fmtDow(r.raw).slice(0,3) + ", " + fmtDate(r.raw) + " (" + r.reasons.join(", ") + ")</span>"
+      : "";
+    tr.innerHTML =
+      '<td class="date-cell">' + fmtDate(r.date) + '<span class="dow">' + fmtDow(r.date) + "</span></td>" +
+      "<td><b>" + escapeHtml(r.label) + '</b><span class="rule">' + escapeHtml(r.rule) + "</span>" + adjHtml + "</td>" +
+      '<td class="countdown">' + cd + "</td>";
+    tbody.appendChild(tr);
+  }
+  $("genStamp").textContent = "Generated " + fmtDate(new Date());
+  $("results").style.display = "block";
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+/* ---------------- Exports ---------------- */
+function exportRows() {
+  return buildRows().map(r => ({
+    date: isoDate(r.date), pretty: fmtDate(r.date), dow: fmtDow(r.date),
+    label: r.label, rule: r.rule,
+    note: r.moved ? "Moved forward from " + fmtDate(r.raw) + " (" + r.reasons.join(", ") + ")" : ""
+  }));
+}
+$("btnCopy").addEventListener("click", async () => {
+  const lines = exportRows().map(r => [r.pretty, r.dow, r.label, r.rule, r.note].join("\t"));
+  const txt = ["Date\tDay\tDeadline\tRule\tNote", ...lines].join("\n");
+  await navigator.clipboard.writeText(txt);
+  flashBtn($("btnCopy"), "✓ Copied");
+});
+$("btnCsv").addEventListener("click", () => {
+  const esc = v => '"' + String(v).replace(/"/g, '""') + '"';
+  const lines = exportRows().map(r => [r.date, r.dow, r.label, r.rule, r.note].map(esc).join(","));
+  const csv = ["Date,Day,Deadline,Rule,Note", ...lines].join("\r\n");
+  download(csv, "text/csv", (state.caseInfo.cause || "dco") + "-deadlines.csv");
+});
+$("btnIcs").addEventListener("click", () => {
+  const cause = state.caseInfo.cause || "DCO";
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+  let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DCO Deadline Calculator//EN\r\nCALSCALE:GREGORIAN\r\n";
+  exportRows().forEach((r, i) => {
+    const d = r.date.replace(/-/g, "");
+    const next = new Date(r.date + "T00:00:00"); next.setDate(next.getDate() + 1);
+    const dEnd = isoDate(next).replace(/-/g, "");
+    ics += "BEGIN:VEVENT\r\nUID:" + cause.replace(/\W/g, "") + "-" + i + "@dco-calc\r\nDTSTAMP:" + stamp +
+      "\r\nDTSTART;VALUE=DATE:" + d + "\r\nDTEND;VALUE=DATE:" + dEnd +
+      "\r\nSUMMARY:" + icsEsc(cause + " — " + r.label) +
+      "\r\nDESCRIPTION:" + icsEsc(r.rule + (r.note ? " | " + r.note : "") + " | Cause No. " + cause) +
+      "\r\nEND:VEVENT\r\n";
+  });
+  ics += "END:VCALENDAR\r\n";
+  download(ics, "text/calendar", cause.replace(/[^\w-]/g, "") + "-deadlines.ics");
+});
+function icsEsc(s) { return String(s).replace(/\\/g, "\\\\").replace(/[,;]/g, m => "\\" + m).replace(/\n/g, "\\n"); }
+$("btnPrint").addEventListener("click", () => window.print());
+$("resetBtn").addEventListener("click", () => {
+  $("results").style.display = "none";
+  $("errorBox").style.display = "none";
+  $("dropzone").style.display = "";
+  $("fileInput").value = "";
+});
+function download(content, mime, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+function flashBtn(btn, msg) {
+  const old = btn.textContent;
+  btn.textContent = msg;
+  setTimeout(() => { btn.textContent = old; }, 1600);
+}
+
+/* ---------------- Trial date edit ---------------- */
+$("trialDateInput").addEventListener("change", e => {
+  if (!e.target.value) return;
+  const [y, mo, da] = e.target.value.split("-").map(Number);
+  state.trialDate = new Date(y, mo - 1, da);
+  state.trialDateSource = "manually set";
+  render();
+});
+
+/* ---------------- Upload wiring ---------------- */
+const dz = $("dropzone");
+dz.addEventListener("click", () => $("fileInput").click());
+$("btnBrowse").addEventListener("click", e => { e.stopPropagation(); $("fileInput").click(); });
+dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("dragover"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
+dz.addEventListener("drop", e => {
+  e.preventDefault(); dz.classList.remove("dragover");
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+$("fileInput").addEventListener("change", e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+function setProgress(label, frac) {
+  if (label) $("progLabel").textContent = label;
+  if (frac !== null && frac !== undefined) $("progBar").style.width = Math.round(frac * 100) + "%";
+}
+
+async function handleFile(file) {
+  $("errorBox").style.display = "none";
+  $("results").style.display = "none";
+  dz.style.display = "none";
+  $("progress").style.display = "";
+  setProgress("Opening " + file.name + "…", 0.02);
+  $("progSub").textContent = "Everything runs locally in your browser — the file never leaves this computer.";
+  try {
+    const text = await extractText(file, setProgress);
+    setProgress("Finding dates…", 0.97);
+    const parsed = parseDocument(text);
+    state = { text, caseInfo: parsed.info, deadlines: parsed.deadlines,
+      fixedItems: parsed.fixedItems, trialDate: parsed.trialDate, trialDateSource: parsed.trialSource };
+    $("progress").style.display = "none";
+    if (!parsed.trialDate) {
+      state.trialDate = new Date();
+      state.trialDateSource = "NOT FOUND — enter it manually";
+    }
+    if (!parsed.deadlines.length && !parsed.fixedItems.length) {
+      showError("No “N days before trial” deadlines were found in this document. " +
+        "It may not be a Docket Control Order, or the scan quality may be too poor to read.");
+      return;
+    }
+    render();
+  } catch (err) {
+    console.error(err);
+    showError("Could not read this file: " + (err && err.message ? err.message : err));
+  }
+}
+function showError(msg) {
+  $("progress").style.display = "none";
+  dz.style.display = "";
+  const box = $("errorBox");
+  box.textContent = msg;
+  box.style.display = "";
+}
+
+/* debug hook for automated testing */
+window.__processUrl = async url => {
+  const resp = await fetch(url);
+  const blob = await resp.blob();
+  await handleFile(new File([blob], url.split("/").pop(), { type: "application/pdf" }));
+  return exportRows();
+};
+</script>
+</body>
+</html>
