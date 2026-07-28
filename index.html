@@ -195,14 +195,14 @@
         <button class="act" id="resetBtn">↺ New document</button>
       </div>
       <div class="note">
-        Per the order, any deadline falling on a weekend or legal holiday is moved to the <b>first business day
-        thereafter</b> — adjusted dates are flagged in amber. Holidays checked: New Year's Day, MLK Day, Presidents
+        Deadlines whose date lands on a weekend or legal holiday are shown on the <b>previous business day</b> —
+        never later — per firm calendaring practice. The amber note on each adjusted row records the date written
+        in the order (and, where the order rolls weekend deadlines forward, the order's official deadline).
+        The same early dates are used in the table, CSV, and calendar (.ics) export; court settings (trial,
+        pre-trial conference) always keep their actual dates. Holidays checked: New Year's Day, MLK Day, Presidents
         Day, Good Friday, Memorial Day, Juneteenth, July 4, Labor Day, Veterans Day, Thanksgiving (Thu &amp; Fri),
         Christmas Eve &amp; Day, Dec 26. County-observed holidays can vary — verify any flagged date against the
-        Williamson County Commissioners Court holiday schedule. <b>Calendar export (.ics):</b> deadlines whose
-        date lands on a weekend or holiday are calendared on the <b>previous business day</b> — never later —
-        with the order's official date noted in the event description. Court settings (trial, pre-trial
-        conference) are calendared on their actual dates. This tool is an aid, not legal advice.
+        Williamson County Commissioners Court holiday schedule. This tool is an aid, not legal advice.
       </div>
     </div>
   </div>
@@ -635,21 +635,28 @@ function titleCase(s) {
 function buildRows() {
   const trial = state.trialDate;
   const rows = [];
+  // Act-by deadlines are always shown EARLY: a date landing on a weekend or holiday
+  // moves back to the previous business day (firm practice — never a day after).
+  // `official` keeps the order's own date for the note. Court settings stay as-is.
+  const addEarly = (label, rule, base, official, kind) => {
+    const date = previousBusinessDay(base);
+    rows.push({ label, rule, date, raw: base, official,
+      moved: date.getTime() !== base.getTime(), kind });
+  };
   for (const d of state.deadlines) {
-    const raw = new Date(trial);
-    raw.setDate(raw.getDate() - d.days);
-    const { date, moved, reasons } = rollForward(raw);
-    rows.push({ label: d.label, rule: d.days + " days before trial", date, raw, moved, reasons, kind: "deadline" });
+    const base = new Date(trial);
+    base.setDate(base.getDate() - d.days);
+    // the order's own rule moves weekend deadlines FORWARD — keep that as the official date
+    addEarly(d.label, d.days + " days before trial", base, rollForward(base).date, "deadline");
   }
   for (const f of state.fixedItems) {
-    rows.push({ label: f.label, rule: f.rule, date: f.date, raw: f.date, moved: false, reasons: [], kind: "fixed" });
+    rows.push({ label: f.label, rule: f.rule, date: f.date, raw: f.date, moved: false,
+      flagged: nonBusinessName(f.date), kind: "fixed" });
   }
   for (const s of (state.stated || [])) {
-    // explicit dates are shown as written — flagged, not auto-moved, if non-business
-    rows.push({ label: s.label, rule: s.rule, date: s.date, raw: s.date, moved: false, reasons: [],
-      flagged: nonBusinessName(s.date), kind: "stated" });
+    addEarly(s.label, s.rule, s.date, s.date, "stated");
   }
-  rows.push({ label: "TRIAL", rule: "Trial date", date: trial, raw: trial, moved: false, reasons: [],
+  rows.push({ label: "TRIAL", rule: "Trial date", date: trial, raw: trial, moved: false,
     flagged: nonBusinessName(trial), kind: "trial" });
   // dedupe rows describing the same item (e.g. Pretrial Conference found by two parsers)
   const seenRow = new Set();
@@ -708,9 +715,12 @@ function render() {
       days < 0 ? Math.abs(days) + " days ago" :
       days === 0 ? "TODAY" : "in " + days + " days";
     const adjHtml = r.moved
-      ? '<span class="adj">⚠ moved from ' + fmtDow(r.raw).slice(0,3) + ", " + fmtDate(r.raw) + " (" + r.reasons.join(", ") + ")</span>"
+      ? '<span class="adj">⚠ moved up from ' + fmtDow(r.raw).slice(0,3) + ", " + fmtDate(r.raw) +
+        (r.official && r.official.getTime() !== r.raw.getTime()
+          ? " — official deadline per the order: " + fmtDow(r.official).slice(0,3) + ", " + fmtDate(r.official)
+          : " (date as written in the order)") + "</span>"
       : r.flagged
-      ? '<span class="adj">⚠ falls on ' + escapeHtml(r.flagged) + " — shown as written in the order; confirm with the court</span>"
+      ? '<span class="adj">⚠ falls on ' + escapeHtml(r.flagged) + "</span>"
       : "";
     tr.innerHTML =
       '<td class="date-cell">' + fmtDate(r.date) + '<span class="dow">' + fmtDow(r.date) + "</span></td>" +
@@ -734,8 +744,11 @@ function exportRows() {
   return buildRows().map(r => ({
     date: isoDate(r.date), pretty: fmtDate(r.date), dow: fmtDow(r.date),
     label: r.label, rule: r.rule,
-    note: r.moved ? "Moved forward from " + fmtDate(r.raw) + " (" + r.reasons.join(", ") + ")"
-      : r.flagged ? "Falls on " + r.flagged + " — shown as written in the order; confirm with the court" : ""
+    note: r.moved ? "Moved up from " + fmtDate(r.raw) +
+        (r.official && r.official.getTime() !== r.raw.getTime()
+          ? "; official deadline per the order: " + fmtDate(r.official)
+          : " (date as written in the order)")
+      : r.flagged ? "Falls on " + r.flagged : ""
   }));
 }
 $("btnCopy").addEventListener("click", async () => {
@@ -755,19 +768,14 @@ $("btnIcs").addEventListener("click", () => {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
   let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DCO Deadline Calculator//EN\r\nCALSCALE:GREGORIAN\r\n";
   buildRows().forEach((r, i) => {
-    // Calendar policy: act-by deadlines landing on a weekend/holiday are calendared on the
-    // PREVIOUS business day — never later. (The table still shows the order's official date.)
-    // Court settings (trial, pre-trial conference) stay on their actual dates.
-    let evDate = r.date, shiftNote = "";
-    if (r.kind !== "trial" && r.kind !== "fixed") {
-      const early = previousBusinessDay(r.raw);
-      if (early.getTime() !== r.date.getTime()) {
-        evDate = early;
-        shiftNote = "CALENDARED EARLY — official deadline per the order: " +
-          fmtDow(r.date) + ", " + fmtDate(r.date) +
-          (r.moved ? " (the order moves weekend/holiday deadlines to the next business day)" : "") + ".";
-      }
-    }
+    // Rows already carry the early-shifted date (weekend/holiday deadlines show the
+    // previous business day everywhere); the note records the order's own date.
+    const evDate = r.date;
+    const shiftNote = r.moved
+      ? "CALENDARED EARLY — " + (r.official && r.official.getTime() !== r.raw.getTime()
+          ? "official deadline per the order: " + fmtDow(r.official) + ", " + fmtDate(r.official)
+          : "date as written in the order: " + fmtDow(r.raw) + ", " + fmtDate(r.raw)) + "."
+      : "";
     const d = isoDate(evDate).replace(/-/g, "");
     const next = new Date(evDate); next.setDate(next.getDate() + 1);
     const dEnd = isoDate(next).replace(/-/g, "");
