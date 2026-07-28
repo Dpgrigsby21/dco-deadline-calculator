@@ -152,7 +152,7 @@
         <input type="date" id="trialDateInput">
         <span id="trialSource" class="pill"></span>
       </div>
-      <div class="note no-print">If the OCR misread the trial date, correct it here — all deadlines recalculate instantly.</div>
+      <div class="note no-print" id="trialHint">If the OCR misread the trial date, correct it here — all deadlines recalculate instantly.</div>
     </div>
 
     <div class="card">
@@ -197,7 +197,7 @@ const WORD_NUM = { ONE:1, TWO:2, THREE:3, FOUR:4, FIVE:5, SIX:6, SEVEN:7, EIGHT:
   ELEVEN:11, TWELVE:12, THIRTEEN:13, FOURTEEN:14, FIFTEEN:15, TWENTY:20, THIRTY:30, FORTY:40,
   FORTYFIVE:45, FIFTY:50, SIXTY:60, SEVENTY:70, "SEVENTY-FIVE":75, EIGHTY:80, NINETY:90 };
 
-let state = { text: "", caseInfo: {}, deadlines: [], fixedItems: [], trialDate: null, trialDateSource: "" };
+let state = { text: "", caseInfo: {}, deadlines: [], fixedItems: [], stated: [], trialDate: null, trialDateSource: "" };
 
 /* ---------------- Date helpers ---------------- */
 function nthWeekday(year, month, weekday, n) { // month 0-based
@@ -289,17 +289,36 @@ function parseMonthName(s) {
 }
 
 /* ---------------- PDF → text ---------------- */
+// Rebuild visual lines from positioned text runs. Fill-in-the-form PDFs put the
+// typed-in dates at the end of the content stream, so stream order scrambles them;
+// grouping by y-coordinate puts each date back on the line of the item it fills.
+function linesFromTextItems(items) {
+  const rows = [];
+  for (const it of items) {
+    if (!it.str || !it.str.trim()) continue;
+    const x = it.transform[4], y = it.transform[5];
+    let row = rows.find(r => Math.abs(r.y - y) < 5);
+    if (!row) { row = { y, parts: [] }; rows.push(row); }
+    row.parts.push({ x, str: it.str });
+  }
+  rows.sort((a, b) => b.y - a.y);
+  return rows.map(r =>
+    r.parts.sort((a, b) => a.x - b.x).map(p => p.str).join(" ").replace(/\s+/g, " ").trim());
+}
 async function extractText(file, onProgress) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   // 1) try embedded text layer
-  let embedded = "";
+  const embLines = [];
+  let embChars = 0;
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const tc = await page.getTextContent();
-    embedded += tc.items.map(it => it.str).join(" ") + "\n";
+    const lines = linesFromTextItems(tc.items);
+    embChars += lines.join("").replace(/\s/g, "").length;
+    embLines.push(...lines);
   }
-  if (embedded.replace(/\s/g, "").length > 200) return embedded;
+  if (embChars > 200) return embLines.join("\n");
 
   // 2) scanned document → OCR each page
   onProgress("Preparing OCR engine…", 0.05);
@@ -323,7 +342,9 @@ async function extractText(file, onProgress) {
     const viewport = page.getViewport({ scale });
     const canvas = document.createElement("canvas");
     canvas.width = viewport.width; canvas.height = viewport.height;
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    // intent:'print' yields via timeouts instead of requestAnimationFrame, which
+    // Chrome suspends in background tabs — without it, OCR hangs if the tab loses focus
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport, intent: "print" }).promise;
     const { data } = await worker.recognize(canvas);
     fullText += data.text + "\n";
     ocrPageDone++;
@@ -333,29 +354,42 @@ async function extractText(file, onProgress) {
 }
 
 /* ---------------- Parsing ---------------- */
-function parseDatesNear(text) {
-  // returns [{index, date, raw}]
-  const re = new RegExp("(" + MONTH_RE + ")\\.?\\s+(\\d{1,2})\\s*,?\\s*(\\d{4})", "gi");
+function findDates(s) {
+  // returns [{index, date, raw}] — matches "April 19, 2027" and "4/19/2027" / "4/19/27"
   const out = [];
+  const named = new RegExp("(" + MONTH_RE + ")\\.?\\s+(\\d{1,2})\\s*,?\\s*(\\d{4})", "gi");
   let m;
-  while ((m = re.exec(text)) !== null) {
+  while ((m = named.exec(s)) !== null) {
     const month = parseMonthName(m[1]);
     const day = parseInt(m[2], 10), year = parseInt(m[3], 10);
     if (month >= 0 && day >= 1 && day <= 31 && year > 1990 && year < 2100) {
       out.push({ index: m.index, date: new Date(year, month, day), raw: m[0] });
     }
   }
+  const numeric = /\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/g;
+  while ((m = numeric.exec(s)) !== null) {
+    const month = parseInt(m[1], 10) - 1, day = parseInt(m[2], 10);
+    let year = parseInt(m[3], 10);
+    if (year < 100) year += 2000;
+    if (month >= 0 && month <= 11 && day >= 1 && day <= 31 && year > 1990 && year < 2100) {
+      out.push({ index: m.index, date: new Date(year, month, day), raw: m[0] });
+    }
+  }
+  out.sort((a, b) => a.index - b.index);
   return out;
 }
 
-function parseDocument(rawText) {
-  const text = rawText.replace(/[|]/g, " ").replace(/[ \t]+/g, " ");
+function parseDocument(rawTextIn) {
+  // e-filing certificate-of-service pages are full of unrelated dates — cut them off
+  const rawText = rawTextIn.split(/AUTOMATED\s+CERTIFICATE\s+OF\s+E?SERVICE|CERTIFICATE\s+OF\s+SERVICE/i)[0];
+  const text = rawText.replace(/[|�]/g, " ").replace(/[ \t]+/g, " ");
   const flat = text.replace(/\s+/g, " ");
+  const lines = rawText.split(/\n/).map(l => l.replace(/[|�]/g, " ").replace(/\s+/g, " ").trim());
   const info = {};
 
-  let m = flat.match(/CAUSE\s*N[O0]\.?\s*[:.]?\s*([\w][\w-]{3,25})/i);
+  let m = flat.match(/CAUSE\s*N[O0]\.?\s*[:.]?\s*_*\s*([A-Za-z0-9][A-Za-z0-9-]{3,25})/i);
   if (m) info.cause = m[1];
-  m = flat.match(/(?<!\d)(\d+)\s*(?:ST|ND|RD|TH|st|nd|rd|th|™)?\s*JUDICIAL\s+DISTRICT/i);
+  m = flat.match(/(?<!\d)(\d+)\s*(?:ST|ND|RD|TH|st|nd|rd|th|™)?[_\s]*(?:JUDICIAL\s+DISTRICT|DISTRICT\s+COURT)/i);
   if (m) {
     // Texas district court numbers are at most 3 digits; OCR often mangles the
     // superscript ordinal ("368TH" -> "36874"), so keep the leading digits only
@@ -364,38 +398,21 @@ function parseDocument(rawText) {
   }
   m = flat.match(/([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)\s+COUNTY\s*,?\s*TEXAS/i);
   if (m) info.county = titleCase(m[1]) + " County, Texas";
-  // parties: caption is two-column, so "vs." may end a line with the defendant below
-  const capLines = rawText.split(/\n/).slice(0, 15).map(l =>
-    l.replace(/§.*$/, "")
-     .replace(/\b(IN THE DISTRICT COURT|JUDICIAL DISTRICT|COUNTY,?\s*TEXAS).*$/i, "")
-     .replace(/[^\w)]+$/, "").trim()
-  );
-  for (let i = 0; i < capLines.length; i++) {
-    const both = capLines[i].match(/^(.{3,70}?)\s+vs?\.?\s+(.{3,70})$/i);
-    if (both) { info.parties = both[1] + "  v.  " + both[2]; break; }
-    const trailing = capLines[i].match(/^(.{3,70}?)\s+vs?\.?$/i);
-    if (trailing) {
-      const next = capLines.slice(i + 1).find(l => l.length > 2);
-      if (next) { info.parties = trailing[1] + "  v.  " + next; break; }
-    }
-  }
+  parseCaption(lines, info);
 
   // ---- trial date: "TRIAL:" (not PRE-TRIAL) followed by a date ----
   let trialDate = null, trialSource = "";
-  const allDates = parseDatesNear(flat);
-  const trialRe = /(?<![A-Za-z-])TRIAL\s*[:;.,_]*\s*/gi;
+  const allDates = findDates(flat);
+  // case-sensitive and no "." connector — "…delay the trial. 4. 11/7/2026" must not match
+  const trialRe = /(?<![A-Za-z-])TRIAL\s*[:;,_]*\s*/g;
   let tm;
   while ((tm = trialRe.exec(flat)) !== null) {
     const before = flat.slice(Math.max(0, tm.index - 30), tm.index).toUpperCase();
-    if (/PRE[-\s—–]*$/.test(before) || /CONFERENCE\s*$/.test(before)) continue;
+    if (/PRE[-\s—–]*$/.test(before) || /CONFERENCE\s*$/.test(before) ||
+        /LENGTH\s+OF\s*$/.test(before) || /BEFORE\s*$/.test(before)) continue;
     // date must start within ~15 chars of the match end
     const near = allDates.find(d => d.index >= trialRe.lastIndex - 2 && d.index <= trialRe.lastIndex + 15);
     if (near) { trialDate = near.date; trialSource = "found in document"; }
-  }
-  if (!trialDate && allDates.length) {
-    // fallback: latest date mentioned is almost always the trial date
-    trialDate = allDates.reduce((a, b) => (b.date > a.date ? b : a)).date;
-    trialSource = "best guess — please verify";
   }
 
   // ---- fixed-date items (e.g. Pre-Trial Conference with explicit date) ----
@@ -458,7 +475,126 @@ function parseDocument(rawText) {
     seen.add(k); return true;
   });
 
-  return { info, trialDate, trialSource, deadlines: deduped, fixedItems };
+  // ---- fill-in-the-blank orders: each line has an explicit typed-in date ----
+  const stated = [];
+  let statedHeading = "", pretrialDate = null;
+  const parsedLines = lines.map(line => {
+    const stripped = line.replace(/_{2,}/g, " ").replace(/\s+/g, " ").trim();
+    const dates = findDates(stripped);
+    let noDates = stripped;
+    for (const d of dates) noDates = noDates.replace(d.raw, " ");
+    noDates = noDates.replace(/\s+/g, " ").trim();
+    const mk = noDates.match(/^\(?([A-Za-z0-9]{1,2})\s*[.)]\s*/);
+    const isSub = mk ? /^[a-z]$/.test(mk[1]) : false;
+    const isNum = mk ? /^\d{1,2}$/.test(mk[1]) : false;
+    const body = mk ? noDates.slice(mk[0].length).trim() : noDates;
+    const capsM = body.match(/^([A-Z][A-Z0-9 ,'’&\/-]{3,60}?)\s*(?:[.:]|$)/);
+    const capsHead = capsM && /[A-Z]{3}/.test(capsM[1]) ? capsM[1].trim() : null;
+    return { stripped, dates, isSub, isNum, body, capsHead };
+  });
+  const usedHeadings = new Set();
+  for (let i = 0; i < parsedLines.length; i++) {
+    const L = parsedLines[i];
+    if (!L.stripped) continue;
+    if (/ESTIMATED\s+LENGTH\s+OF\s+TRIAL/i.test(L.stripped)) {
+      const v = L.stripped.replace(/ESTIMATED\s+LENGTH\s+OF\s+TRIAL/i, " ")
+        .replace(/^\s*\d{1,2}\s*[.)]/, " ").replace(/[.:;]+/g, " ").replace(/\s+/g, " ").trim();
+      if (v) info.estLength = v;
+      continue;
+    }
+    if (/DAYS?\s+BEFORE\s/i.test(L.stripped)) continue; // relative rule — format A handles it
+    if (L.isNum && L.capsHead) statedHeading = titleCase(L.capsHead);
+    if (L.dates.length !== 1) continue; // need exactly one date on the line
+    if (/\bSIGNED\b/i.test(L.stripped)) continue; // signature date, not a deadline
+    // choose a label: this line's caps heading, its sub-item text, or a caps heading
+    // on an adjacent line — form date stamps often land a hair off their template row
+    let label = null, isSubLabel = false;
+    if (L.capsHead) label = L.capsHead;
+    else if (L.isSub && L.body.length >= 3) { label = L.body; isSubLabel = true; }
+    else {
+      for (const j of [i - 1, i + 1]) {
+        const N = parsedLines[j];
+        if (N && !N.dates.length && N.capsHead && !usedHeadings.has(j)) {
+          label = N.capsHead;
+          usedHeadings.add(j);
+          break;
+        }
+      }
+    }
+    if (!label) continue;
+    const cut = label.search(/\.\s|:\s/);
+    if (cut > 2) label = label.slice(0, cut);
+    label = label.replace(/\s+(must|shall|may|will)\b.*$/i, "").replace(/[.:;,]+$/, "").trim();
+    if (label.length < 3 || /^\d+$/.test(label)) continue;
+    if (/^(SIGNED|AGREED|DATED?|EMAIL|STATUS|ENVELOPE|FILED?|SUBMITTED)/i.test(label)) continue;
+    const up = label.toUpperCase();
+    if (/^TRIAL\b/.test(up) && up.length <= 10) {
+      trialDate = L.dates[0].date; trialSource = "found in document";
+      continue;
+    }
+    let full = isSubLabel && statedHeading ? statedHeading + " — " + label : titleCase(label);
+    if (/^PRE-?TRIAL\s+CONFERENCE/i.test(label)) { pretrialDate = L.dates[0].date; full = "Pretrial Conference"; }
+    stated.push({ label: full, date: L.dates[0].date, rule: "Date stated in order" });
+  }
+
+  // derived: "ALL PRETRIAL MOTIONS MUST BE FILED AT LEAST N DAYS PRIOR TO THE PRETRIAL HEARING"
+  m = flat.match(/(\d{1,3})\s+DAYS\s+PRIOR\s+TO\s+THE\s+PRE-?TRIAL\s+(?:HEARING|CONFERENCE)/i);
+  if (m && pretrialDate) {
+    const n = parseInt(m[1], 10);
+    const d = new Date(pretrialDate);
+    d.setDate(d.getDate() - n);
+    stated.push({ label: "All Pretrial Motions Filed", date: d,
+      rule: "at least " + n + " days before the Pretrial Conference" });
+  }
+
+  if (!trialDate && allDates.length) {
+    // fallback: latest date mentioned is almost always the trial date
+    trialDate = allDates.reduce((a, b) => (b.date > a.date ? b : a)).date;
+    trialSource = "best guess — please verify";
+  }
+
+  return { info, trialDate, trialSource, deadlines: deduped, fixedItems, stated };
+}
+
+function parseCaption(rawLines, info) {
+  // caption is two-column; strip the right column (court info) and underscore blanks
+  const capLines = rawLines.slice(0, 20).map(l =>
+    l.replace(/§.*$/, "")
+     .replace(/_{2,}/g, " ")
+     .replace(/\b(IN THE DISTRICT COURT|JUDICIAL DISTRICT|DISTRICT COURT|COUNTY,?\s*TEXAS)\b.*$/i, "")
+     .replace(/[^\w)&,.'’ -]+$/, "").trim()
+  );
+  for (let i = 0; i < capLines.length; i++) {
+    const both = capLines[i].match(/^(.{3,70}?)\s+vs?\.?\s+(.{3,70})$/i);
+    if (both && !/^\d/.test(both[2])) { info.parties = both[1] + "  v.  " + both[2]; return; }
+    const trailing = capLines[i].match(/^(.{3,70}?)\s+vs?\.?$/i);
+    if (trailing) {
+      const next = capLines.slice(i + 1).find(l => l.length > 2);
+      if (next) { info.parties = trailing[1] + "  v.  " + next; return; }
+    }
+  }
+  // form captions put "VS." on its own line (sometimes sharing it with the stamped
+  // court number) with multi-line party names above and below
+  const isNoise = l => !l || l.length < 3 || /^\d+(st|nd|rd|th)?$/i.test(l) ||
+    /^(CAUSE|DOCKET|The following|IN THE)/i.test(l);
+  const vsIdx = capLines.findIndex(l => /^vs?\.?\s*(\d{1,4}(st|nd|rd|th)?)?$/i.test(l));
+  if (vsIdx > 0) {
+    const above = [];
+    for (let i = vsIdx - 1; i >= 0 && above.length < 3; i--) {
+      if (/^CAUSE/i.test(capLines[i])) break;
+      if (!isNoise(capLines[i])) above.unshift(capLines[i]);
+    }
+    const below = [];
+    for (let i = vsIdx + 1; i < capLines.length && below.length < 3; i++) {
+      if (/^(DOCKET|The following)/i.test(capLines[i])) break;
+      if (isNoise(capLines[i])) { if (below.length) break; continue; }
+      below.push(capLines[i]);
+    }
+    if (above.length && below.length) {
+      const clean = s => s.replace(/[,;]+$/, "").replace(/\s+/g, " ").trim();
+      info.parties = clean(above.join(" ")) + "  v.  " + clean(below.join(" "));
+    }
+  }
 }
 function getOrdinal(n) {
   const s = ["th","st","nd","rd"], v = n % 100;
@@ -484,9 +620,28 @@ function buildRows() {
   for (const f of state.fixedItems) {
     rows.push({ label: f.label, rule: f.rule, date: f.date, raw: f.date, moved: false, reasons: [], kind: "fixed" });
   }
-  rows.push({ label: "TRIAL", rule: "Trial date", date: trial, raw: trial, moved: false, reasons: [], kind: "trial" });
-  rows.sort((a, b) => a.date - b.date || (b.kind === "trial" ? -1 : 0));
-  return rows;
+  for (const s of (state.stated || [])) {
+    // explicit dates are shown as written — flagged, not auto-moved, if non-business
+    rows.push({ label: s.label, rule: s.rule, date: s.date, raw: s.date, moved: false, reasons: [],
+      flagged: nonBusinessName(s.date), kind: "stated" });
+  }
+  rows.push({ label: "TRIAL", rule: "Trial date", date: trial, raw: trial, moved: false, reasons: [],
+    flagged: nonBusinessName(trial), kind: "trial" });
+  // dedupe rows describing the same item (e.g. Pretrial Conference found by two parsers)
+  const seenRow = new Set();
+  const out = rows.filter(r => {
+    const k = isoDate(r.date) + "|" + r.label.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 12);
+    if (seenRow.has(k)) return false;
+    seenRow.add(k);
+    return true;
+  });
+  out.sort((a, b) => a.date - b.date || (b.kind === "trial" ? -1 : 0));
+  return out;
+}
+function nonBusinessName(d) {
+  const dow = d.getDay();
+  if (dow === 0 || dow === 6) return fmtDow(d);
+  return holidayName(d);
 }
 function render() {
   const grid = $("caseGrid");
@@ -494,7 +649,8 @@ function render() {
   const info = state.caseInfo;
   const cells = [
     ["Cause No.", info.cause], ["Parties", info.parties],
-    ["Court", info.court], ["County", info.county]
+    ["Court", info.court], ["County", info.county],
+    ["Est. Trial Length", info.estLength]
   ].filter(c => c[1]);
   $("caseCard").style.display = cells.length ? "" : "none";
   for (const [k, v] of cells) {
@@ -524,6 +680,8 @@ function render() {
       days === 0 ? "TODAY" : "in " + days + " days";
     const adjHtml = r.moved
       ? '<span class="adj">⚠ moved from ' + fmtDow(r.raw).slice(0,3) + ", " + fmtDate(r.raw) + " (" + r.reasons.join(", ") + ")</span>"
+      : r.flagged
+      ? '<span class="adj">⚠ falls on ' + escapeHtml(r.flagged) + " — shown as written in the order; confirm with the court</span>"
       : "";
     tr.innerHTML =
       '<td class="date-cell">' + fmtDate(r.date) + '<span class="dow">' + fmtDow(r.date) + "</span></td>" +
@@ -531,6 +689,9 @@ function render() {
       '<td class="countdown">' + cd + "</td>";
     tbody.appendChild(tr);
   }
+  $("trialHint").textContent = (state.stated && state.stated.length && !state.deadlines.length)
+    ? "This order states each deadline as an explicit date, so deadlines don't shift if you change the trial date."
+    : "If the OCR misread the trial date, correct it here — all deadlines recalculate instantly.";
   $("genStamp").textContent = "Generated " + fmtDate(new Date());
   $("results").style.display = "block";
 }
@@ -543,7 +704,8 @@ function exportRows() {
   return buildRows().map(r => ({
     date: isoDate(r.date), pretty: fmtDate(r.date), dow: fmtDow(r.date),
     label: r.label, rule: r.rule,
-    note: r.moved ? "Moved forward from " + fmtDate(r.raw) + " (" + r.reasons.join(", ") + ")" : ""
+    note: r.moved ? "Moved forward from " + fmtDate(r.raw) + " (" + r.reasons.join(", ") + ")"
+      : r.flagged ? "Falls on " + r.flagged + " — shown as written in the order; confirm with the court" : ""
   }));
 }
 $("btnCopy").addEventListener("click", async () => {
@@ -634,16 +796,16 @@ async function handleFile(file) {
     const text = await extractText(file, setProgress);
     setProgress("Finding dates…", 0.97);
     const parsed = parseDocument(text);
-    state = { text, caseInfo: parsed.info, deadlines: parsed.deadlines,
-      fixedItems: parsed.fixedItems, trialDate: parsed.trialDate, trialDateSource: parsed.trialSource };
+    state = { text, caseInfo: parsed.info, deadlines: parsed.deadlines, fixedItems: parsed.fixedItems,
+      stated: parsed.stated, trialDate: parsed.trialDate, trialDateSource: parsed.trialSource };
     $("progress").style.display = "none";
     if (!parsed.trialDate) {
       state.trialDate = new Date();
       state.trialDateSource = "NOT FOUND — enter it manually";
     }
-    if (!parsed.deadlines.length && !parsed.fixedItems.length) {
-      showError("No “N days before trial” deadlines were found in this document. " +
-        "It may not be a Docket Control Order, or the scan quality may be too poor to read.");
+    if (!parsed.deadlines.length && !parsed.fixedItems.length && !parsed.stated.length) {
+      showError("No deadlines were found in this document. It may not be a Docket Control Order, " +
+        "or the scan quality may be too poor to read.");
       return;
     }
     render();
