@@ -199,7 +199,10 @@
         thereafter</b> — adjusted dates are flagged in amber. Holidays checked: New Year's Day, MLK Day, Presidents
         Day, Good Friday, Memorial Day, Juneteenth, July 4, Labor Day, Veterans Day, Thanksgiving (Thu &amp; Fri),
         Christmas Eve &amp; Day, Dec 26. County-observed holidays can vary — verify any flagged date against the
-        Williamson County Commissioners Court holiday schedule. This tool is an aid, not legal advice.
+        Williamson County Commissioners Court holiday schedule. <b>Calendar export (.ics):</b> deadlines whose
+        date lands on a weekend or holiday are calendared on the <b>previous business day</b> — never later —
+        with the order's official date noted in the event description. Court settings (trial, pre-trial
+        conference) are calendared on their actual dates. This tool is an aid, not legal advice.
       </div>
     </div>
   </div>
@@ -664,6 +667,11 @@ function nonBusinessName(d) {
   if (dow === 0 || dow === 6) return fmtDow(d);
   return holidayName(d);
 }
+function previousBusinessDay(d) {
+  const out = new Date(d);
+  while (out.getDay() === 0 || out.getDay() === 6 || holidayName(out)) out.setDate(out.getDate() - 1);
+  return out;
+}
 function render() {
   const grid = $("caseGrid");
   grid.innerHTML = "";
@@ -746,14 +754,27 @@ $("btnIcs").addEventListener("click", () => {
   const cause = state.caseInfo.cause || "DCO";
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
   let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DCO Deadline Calculator//EN\r\nCALSCALE:GREGORIAN\r\n";
-  exportRows().forEach((r, i) => {
-    const d = r.date.replace(/-/g, "");
-    const next = new Date(r.date + "T00:00:00"); next.setDate(next.getDate() + 1);
+  buildRows().forEach((r, i) => {
+    // Calendar policy: act-by deadlines landing on a weekend/holiday are calendared on the
+    // PREVIOUS business day — never later. (The table still shows the order's official date.)
+    // Court settings (trial, pre-trial conference) stay on their actual dates.
+    let evDate = r.date, shiftNote = "";
+    if (r.kind !== "trial" && r.kind !== "fixed") {
+      const early = previousBusinessDay(r.raw);
+      if (early.getTime() !== r.date.getTime()) {
+        evDate = early;
+        shiftNote = "CALENDARED EARLY — official deadline per the order: " +
+          fmtDow(r.date) + ", " + fmtDate(r.date) +
+          (r.moved ? " (the order moves weekend/holiday deadlines to the next business day)" : "") + ".";
+      }
+    }
+    const d = isoDate(evDate).replace(/-/g, "");
+    const next = new Date(evDate); next.setDate(next.getDate() + 1);
     const dEnd = isoDate(next).replace(/-/g, "");
     ics += "BEGIN:VEVENT\r\nUID:" + cause.replace(/\W/g, "") + "-" + i + "@dco-calc\r\nDTSTAMP:" + stamp +
       "\r\nDTSTART;VALUE=DATE:" + d + "\r\nDTEND;VALUE=DATE:" + dEnd +
       "\r\nSUMMARY:" + icsEsc(cause + " — " + r.label) +
-      "\r\nDESCRIPTION:" + icsEsc(r.rule + (r.note ? " | " + r.note : "") + " | Cause No. " + cause) +
+      "\r\nDESCRIPTION:" + icsEsc(r.rule + (shiftNote ? " | " + shiftNote : "") + " | Cause No. " + cause) +
       "\r\nEND:VEVENT\r\n";
   });
   ics += "END:VCALENDAR\r\n";
