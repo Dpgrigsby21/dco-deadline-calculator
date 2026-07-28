@@ -120,7 +120,7 @@
   <div class="logo">⚖️</div>
   <div>
     <h1>DCO Deadline Calculator</h1>
-    <p>Upload a Docket Control Order — get every deadline as a real date. Nothing is saved or sent anywhere.</p>
+    <p>Upload a Docket Control Order — get every deadline as a real date. Nothing is stored; documents stay on your computer unless you enable AI parsing.</p>
   </div>
 </header>
 
@@ -132,6 +132,26 @@
     <button class="act primary" id="btnBrowse" type="button">📂 Choose a file…</button>
     <input type="file" id="fileInput" accept="application/pdf,.pdf">
   </div>
+
+  <details class="card no-print" id="aiCard" style="margin-top:14px; padding:14px 20px;">
+    <summary style="cursor:pointer; font-size:13.5px; font-weight:600; color:var(--navy);">
+      🤖 AI-assisted parsing <span id="aiStatus" class="pill" style="margin-left:8px;"></span>
+    </summary>
+    <div class="note" style="margin-top:10px;">
+      The built-in parser knows the common Williamson County formats. For DCOs in <b>any other format</b>,
+      the app can send the document's text to Claude (Anthropic's AI) to find the trial date and deadlines.
+      Requires an Anthropic API key (<a href="https://platform.claude.com/" target="_blank" rel="noopener">get one here</a>) —
+      typically a few cents per document. The key is stored only in this browser.
+      <b>Note:</b> with AI parsing, the document text is sent to Anthropic's API (it is not used for model
+      training under API terms); without it, nothing ever leaves your computer.
+    </div>
+    <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; align-items:center;">
+      <input type="password" id="aiKeyInput" placeholder="sk-ant-..." autocomplete="off"
+        style="flex:1; min-width:240px; font-size:13px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; font-family:inherit;">
+      <button class="act" id="aiKeySave">Save key</button>
+      <button class="act" id="aiKeyClear">Remove key</button>
+    </div>
+  </details>
 
   <div id="progress">
     <div class="label" id="progLabel">Reading document…</div>
@@ -171,6 +191,7 @@
         <button class="act" id="btnCsv">⬇ Download CSV</button>
         <button class="act" id="btnIcs">📅 Export to calendar (.ics)</button>
         <button class="act" id="btnPrint">🖨 Print</button>
+        <button class="act" id="btnAi">🤖 Re-analyze with AI</button>
         <button class="act" id="resetBtn">↺ New document</button>
       </div>
       <div class="note">
@@ -692,7 +713,8 @@ function render() {
   $("trialHint").textContent = (state.stated && state.stated.length && !state.deadlines.length)
     ? "This order states each deadline as an explicit date, so deadlines don't shift if you change the trial date."
     : "If the OCR misread the trial date, correct it here — all deadlines recalculate instantly.";
-  $("genStamp").textContent = "Generated " + fmtDate(new Date());
+  $("genStamp").textContent = (state.aiUsed ? "AI-extracted — verify against the order · " : "") +
+    "Generated " + fmtDate(new Date());
   $("results").style.display = "block";
 }
 function escapeHtml(s) {
@@ -739,6 +761,23 @@ $("btnIcs").addEventListener("click", () => {
 });
 function icsEsc(s) { return String(s).replace(/\\/g, "\\\\").replace(/[,;]/g, m => "\\" + m).replace(/\n/g, "\\n"); }
 $("btnPrint").addEventListener("click", () => window.print());
+$("btnAi").addEventListener("click", async () => {
+  if (!getAiKey()) {
+    $("aiCard").open = true;
+    $("aiCard").scrollIntoView({ behavior: "smooth" });
+    flashBtn($("btnAi"), "Add an API key first");
+    return;
+  }
+  $("errorBox").style.display = "none";
+  $("results").style.display = "none";
+  const ok = await runAiParse();
+  if (ok !== true) {
+    const box = $("errorBox");
+    box.textContent = "AI parsing failed: " + ok;
+    box.style.display = "block";
+    $("results").style.display = "block";
+  }
+});
 $("resetBtn").addEventListener("click", () => {
   $("results").style.display = "none";
   $("errorBox").style.display = "none";
@@ -797,16 +836,32 @@ async function handleFile(file) {
     setProgress("Finding dates…", 0.97);
     const parsed = parseDocument(text);
     state = { text, caseInfo: parsed.info, deadlines: parsed.deadlines, fixedItems: parsed.fixedItems,
-      stated: parsed.stated, trialDate: parsed.trialDate, trialDateSource: parsed.trialSource };
+      stated: parsed.stated, trialDate: parsed.trialDate, trialDateSource: parsed.trialSource, aiUsed: false };
     $("progress").style.display = "none";
+    const found = parsed.deadlines.length + parsed.fixedItems.length + parsed.stated.length;
+    const weak = !parsed.trialDate || found < 3;
     if (!parsed.trialDate) {
       state.trialDate = new Date();
       state.trialDateSource = "NOT FOUND — enter it manually";
     }
-    if (!parsed.deadlines.length && !parsed.fixedItems.length && !parsed.stated.length) {
-      showError("No deadlines were found in this document. It may not be a Docket Control Order, " +
-        "or the scan quality may be too poor to read.");
+    // built-in parser struggled with this format — hand it to the AI if enabled
+    let aiErr = null;
+    if (weak && getAiKey()) {
+      const ok = await runAiParse();
+      if (ok === true) return;
+      aiErr = ok;
+    }
+    if (!found) {
+      showError((aiErr ? "AI parsing failed: " + aiErr + " Also: " : "") +
+        "No deadlines were found by the built-in parser. The document may not be a scheduling order, " +
+        "or the scan quality may be too poor to read." + (getAiKey() ? "" :
+        " Tip: enable AI-assisted parsing (the 🤖 section) to handle unusual formats."));
       return;
+    }
+    if (aiErr) {
+      const box = $("errorBox");
+      box.textContent = "AI parsing failed: " + aiErr + " Showing built-in parser results instead.";
+      box.style.display = "block";
     }
     render();
   } catch (err) {
@@ -819,8 +874,177 @@ function showError(msg) {
   dz.style.display = "";
   const box = $("errorBox");
   box.textContent = msg;
-  box.style.display = "";
+  // must be "block": an empty inline style falls back to the stylesheet's display:none
+  box.style.display = "block";
 }
+
+/* ---------------- AI-assisted parsing (Claude API) ---------------- */
+const AI_KEY_STORAGE = "dco_anthropic_key";
+const getAiKey = () => localStorage.getItem(AI_KEY_STORAGE) || "";
+
+const AI_SCHEMA = {
+  type: "object",
+  properties: {
+    case: {
+      type: "object",
+      properties: {
+        cause_number: { anyOf: [{ type: "string" }, { type: "null" }] },
+        parties: { anyOf: [{ type: "string" }, { type: "null" }],
+          description: "Plaintiff v. Defendant, from the case caption" },
+        court: { anyOf: [{ type: "string" }, { type: "null" }] },
+        county: { anyOf: [{ type: "string" }, { type: "null" }] },
+        estimated_trial_length: { anyOf: [{ type: "string" }, { type: "null" }] }
+      },
+      required: ["cause_number", "parties", "court", "county", "estimated_trial_length"],
+      additionalProperties: false
+    },
+    trial_date: { anyOf: [{ type: "string", format: "date" }, { type: "null" }],
+      description: "The trial or trial-setting date, YYYY-MM-DD, null if none stated" },
+    deadlines: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string", description: "Short name of the deadline, e.g. 'Discovery Period Ends'" },
+          date: { anyOf: [{ type: "string", format: "date" }, { type: "null" }],
+            description: "Explicit calendar date stated in the order, YYYY-MM-DD, else null" },
+          days_before_trial: { anyOf: [{ type: "integer" }, { type: "null" }],
+            description: "If the deadline is defined as N days before trial, N; else null" },
+          rule_text: { type: "string", description: "The rule as written, e.g. '30 days before trial' or 'as stated'" }
+        },
+        required: ["label", "date", "days_before_trial", "rule_text"],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ["case", "trial_date", "deadlines"],
+  additionalProperties: false
+};
+
+const AI_SYSTEM = "You extract scheduling information from court scheduling orders (Docket Control " +
+  "Orders and similar) for a litigation calendaring tool. Extract the trial date, the case caption, and " +
+  "EVERY deadline in the order. For deadlines written as explicit calendar dates, fill `date`. For " +
+  "deadlines defined relative to the trial date ('N days before trial'), fill `days_before_trial` and " +
+  "leave `date` null. Include derived deadlines the order states in prose (e.g. 'all pretrial motions " +
+  "must be filed at least 10 days before the pretrial hearing') by computing their date when possible. " +
+  "Ignore e-filing certificates of service, signature dates, and email addresses. Dates may be written " +
+  "in any format (April 19, 2027 / 4-19-27 / 19th day of April, 2027); normalize to YYYY-MM-DD. The " +
+  "text may contain OCR errors — use context to correct obviously garbled words, but never invent a " +
+  "deadline that is not in the document.";
+
+async function parseWithAI(text) {
+  const key = getAiKey();
+  if (!key) throw new Error("No API key configured — open “AI-assisted parsing” below and add one.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+  let resp;
+  try {
+    resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-8",
+        max_tokens: 8000,
+        thinking: { type: "adaptive" },
+        system: AI_SYSTEM,
+        output_config: { format: { type: "json_schema", schema: AI_SCHEMA } },
+        messages: [{ role: "user", content: "Extract the scheduling information from this order:\n\n" + text }]
+      })
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => null);
+    const msg = err && err.error && err.error.message ? err.error.message : "HTTP " + resp.status;
+    if (resp.status === 401) throw new Error("API key rejected (" + msg + ") — check the key in AI settings.");
+    throw new Error("AI request failed: " + msg);
+  }
+  const data = await resp.json();
+  if (data.stop_reason === "refusal") throw new Error("The AI declined to process this document.");
+  const textBlock = (data.content || []).find(b => b.type === "text");
+  if (!textBlock) throw new Error("AI returned no result.");
+  return JSON.parse(textBlock.text);
+}
+
+function isoToLocalDate(s) {
+  if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+// Map the AI's structured result onto the app's state shape
+function applyAiResult(ai) {
+  const info = {};
+  if (ai.case) {
+    if (ai.case.cause_number) info.cause = ai.case.cause_number;
+    if (ai.case.parties) info.parties = ai.case.parties;
+    if (ai.case.court) info.court = ai.case.court;
+    if (ai.case.county) info.county = ai.case.county;
+    if (ai.case.estimated_trial_length) info.estLength = ai.case.estimated_trial_length;
+  }
+  const deadlines = [], stated = [];
+  for (const d of ai.deadlines || []) {
+    if (!d.label) continue;
+    if (typeof d.days_before_trial === "number" && d.days_before_trial > 0) {
+      deadlines.push({ label: d.label, days: d.days_before_trial });
+    } else {
+      const date = isoToLocalDate(d.date);
+      if (date) stated.push({ label: d.label, date, rule: (d.rule_text || "Date stated in order") + " · AI-extracted" });
+    }
+  }
+  const trialDate = isoToLocalDate(ai.trial_date);
+  state.caseInfo = Object.keys(info).length ? info : state.caseInfo;
+  state.deadlines = deadlines;
+  state.fixedItems = [];
+  state.stated = stated;
+  state.aiUsed = true;
+  if (trialDate) {
+    state.trialDate = trialDate;
+    state.trialDateSource = "found by AI — verify";
+  }
+}
+
+async function runAiParse() {
+  setProgress("Analyzing with AI…", 0.5);
+  $("progress").style.display = "";
+  $("progSub").textContent = "Sending the document text to Claude for extraction.";
+  try {
+    const ai = await parseWithAI(state.text);
+    applyAiResult(ai);
+    $("progress").style.display = "none";
+    if (!state.trialDate) { state.trialDate = new Date(); state.trialDateSource = "NOT FOUND — enter it manually"; }
+    render();
+    return true;
+  } catch (err) {
+    console.error(err);
+    $("progress").style.display = "none";
+    return err.message || String(err);
+  }
+}
+
+function refreshAiStatus() {
+  const s = $("aiStatus");
+  if (getAiKey()) { s.textContent = "enabled"; s.className = "pill"; }
+  else { s.textContent = "no key"; s.className = "pill warn"; }
+}
+$("aiKeySave").addEventListener("click", () => {
+  const v = $("aiKeyInput").value.trim();
+  if (v) { localStorage.setItem(AI_KEY_STORAGE, v); $("aiKeyInput").value = ""; flashBtn($("aiKeySave"), "✓ Saved"); }
+  refreshAiStatus();
+});
+$("aiKeyClear").addEventListener("click", () => {
+  localStorage.removeItem(AI_KEY_STORAGE);
+  flashBtn($("aiKeyClear"), "✓ Removed");
+  refreshAiStatus();
+});
+refreshAiStatus();
 
 /* debug hook for automated testing */
 window.__processUrl = async url => {
